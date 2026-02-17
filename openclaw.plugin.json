@@ -1,4 +1,5 @@
 {
+  "id": "mcp-client",
   "name": "@openclaw/plugin-mcp-client",
   "version": "0.1.0",
   "label": "MCP Client",
