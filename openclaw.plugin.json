@@ -1,5 +1,5 @@
 {
-  "id": "mcp-client",
+  "id": "plugin-mcp-client",
   "name": "@openclaw/plugin-mcp-client",
   "version": "0.1.0",
   "label": "MCP Client",
@@ -12,11 +12,12 @@
       "servers": {
         "type": "object",
         "description": "Map of server name to server configuration",
+        "default": {},
         "additionalProperties": {
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean", "default": true },
-            "url": { "type": "string", "format": "uri", "description": "MCP server endpoint URL" },
+            "url": { "type": "string", "description": "MCP server endpoint URL" },
             "transport": { "type": "string", "enum": ["http", "stdio"], "default": "http" },
             "command": { "type": "string" },
             "args": { "type": "array", "items": { "type": "string" } },
@@ -41,7 +42,6 @@
       "toolDiscoveryInterval": { "type": "number", "default": 300000, "description": "Re-discover tools every N ms" },
       "maxConcurrentServers": { "type": "number", "default": 20 },
       "debug": { "type": "boolean", "default": false }
-    },
-    "required": ["servers"]
+    }
   }
 }
