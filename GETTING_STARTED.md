@@ -16,6 +16,7 @@ cd openclaw-mcp-bridge
 pnpm install
 pnpm build
 openclaw plugins install --link .
+openclaw gateway restart
 ```
 
 After installation, enable the plugin in your `openclaw.json`:

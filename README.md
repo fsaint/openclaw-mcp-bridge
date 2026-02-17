@@ -32,6 +32,7 @@ cd openclaw-mcp-bridge
 pnpm install
 pnpm build
 openclaw plugins install --link .
+openclaw gateway restart
 ```
 
 ## Configuration
