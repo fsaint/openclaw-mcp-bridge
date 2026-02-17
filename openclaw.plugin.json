@@ -1,0 +1,9 @@
+{
+  "name": "@openclaw/plugin-mcp-client",
+  "version": "0.1.0",
+  "label": "MCP Client",
+  "description": "Connect to remote MCP servers via Streamable HTTP with OAuth 2.1 auth",
+  "extensions": ["./dist/index.js"],
+  "slots": ["tool"],
+  "configSchema": "./dist/config-schema.js"
+}
