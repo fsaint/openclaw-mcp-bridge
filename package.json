@@ -1,0 +1,40 @@
+{
+  "name": "@openclaw/plugin-mcp-client",
+  "version": "0.1.0",
+  "description": "MCP client plugin for OpenClaw — Streamable HTTP transport with OAuth 2.1 authentication",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "slots": ["tool"],
+    "configSchema": "./dist/config-schema.js",
+    "catalog": {
+      "label": "MCP Client",
+      "description": "Connect to remote MCP servers via Streamable HTTP with OAuth 2.1 auth"
+    }
+  },
+  "keywords": ["openclaw", "mcp", "model-context-protocol", "plugin"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2025.1.0"
+  }
+}
