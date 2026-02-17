@@ -31,7 +31,7 @@ git clone https://github.com/fsaint/openclaw-mcp-bridge.git
 cd openclaw-mcp-bridge
 pnpm install
 pnpm build
-openclaw plugins install ./dist
+openclaw plugins install --link .
 ```
 
 ## Configuration

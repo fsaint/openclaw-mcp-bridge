@@ -15,13 +15,7 @@ git clone https://github.com/fsaint/openclaw-mcp-bridge.git
 cd openclaw-mcp-bridge
 pnpm install
 pnpm build
-openclaw plugins install ./dist
-```
-
-For local development, use `--link` to symlink instead of copying:
-
-```bash
-openclaw plugins install --link ./dist
+openclaw plugins install --link .
 ```
 
 After installation, enable the plugin in your `openclaw.json`:
