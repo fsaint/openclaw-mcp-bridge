@@ -1,27 +1,23 @@
 /**
  * Plugin entry point for the OpenClaw MCP client plugin.
  *
- * Implements the ToolPlugin interface to register remote MCP tools as
- * OpenClaw agent tools. Manages the full lifecycle: initialization,
- * tool discovery, shutdown, and dynamic configuration reconciliation.
+ * Implements the OpenClaw plugin SDK contract: exports a default object
+ * with a `register(api)` function that registers MCP tools via
+ * `api.registerTool()`.
  *
  * @see SPEC.md section 6.4 for the plugin entry point specification.
  */
 
 import { MCPManager } from "./manager/mcp-manager.js";
 import type { MCPManagerConfig } from "./manager/mcp-manager.js";
-import type { RegisteredTool } from "./manager/tool-registry.js";
 import type { ConfigSchemaType } from "./config-schema.js";
 
 // ---------------------------------------------------------------------------
-// ToolPlugin Interface (local definition — mirrors openclaw/plugin-sdk)
+// OpenClaw Plugin API types (mirrors openclaw/plugin-sdk)
 // ---------------------------------------------------------------------------
 
 /**
- * A single tool definition exposed to the OpenClaw agent runtime.
- *
- * Each tool has a name, description, input schema, and an execute function
- * that the agent calls when it wants to invoke the tool.
+ * A tool object that can be registered with OpenClaw via api.registerTool().
  */
 export interface ToolDefinition {
   /** Unique tool name (namespaced, e.g. "tavily__search"). */
@@ -40,41 +36,13 @@ export interface ToolDefinition {
 }
 
 /**
- * Context provided by OpenClaw when initializing a plugin.
+ * The API object passed to register() by OpenClaw's plugin runtime.
  */
-export interface PluginContext {
-  /** The plugin's validated configuration. */
-  readonly config: ConfigSchemaType;
-}
-
-/**
- * Result returned by a plugin after successful initialization.
- *
- * Contains the tools to register plus optional lifecycle hooks.
- */
-export interface PluginResult {
-  /** Array of tool definitions to register with the agent. */
-  readonly tools: ToolDefinition[];
-  /** Called when the gateway is shutting down. */
-  onShutdown?: () => Promise<void>;
-  /** Called when the plugin configuration changes at runtime. */
-  onConfigChange?: (newConfig: ConfigSchemaType) => Promise<void>;
-}
-
-/**
- * Minimal ToolPlugin interface matching OpenClaw's plugin SDK contract.
- *
- * A plugin must implement `initialize()` which receives the plugin context
- * and returns registered tools plus lifecycle hooks.
- */
-export interface ToolPlugin {
-  /**
-   * Initialize the plugin and return its tools and lifecycle hooks.
-   *
-   * @param context - The plugin context containing validated configuration.
-   * @returns The plugin result with tools and optional lifecycle hooks.
-   */
-  initialize(context: PluginContext): Promise<PluginResult>;
+interface PluginApi {
+  readonly id: string;
+  readonly pluginConfig: ConfigSchemaType;
+  registerTool: (tool: ToolDefinition, opts?: { name?: string }) => void;
+  registerHook: (events: string | string[], handler: (...args: unknown[]) => void, opts?: Record<string, unknown>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,85 +64,75 @@ function toManagerConfig(config: ConfigSchemaType): MCPManagerConfig {
   };
 }
 
-/**
- * Convert an array of RegisteredTool entries to ToolDefinition objects.
- *
- * Each ToolDefinition's `execute` method delegates to
- * `mcpManager.callTool()`, routing the call to the appropriate
- * remote MCP server.
- *
- * @param registeredTools - Tools from the ToolRegistry.
- * @param mcpManager - The MCPManager instance to route calls through.
- * @returns An array of ToolDefinition objects ready for the agent runtime.
- */
-function buildToolDefinitions(
-  registeredTools: readonly RegisteredTool[],
-  mcpManager: MCPManager
-): ToolDefinition[] {
-  return registeredTools.map((tool) => ({
-    name: tool.namespacedName,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    execute: (args: Record<string, unknown>): Promise<unknown> =>
-      mcpManager.callTool(tool.namespacedName, args),
-  }));
-}
-
 // ---------------------------------------------------------------------------
-// Plugin Instance
+// Plugin registration
 // ---------------------------------------------------------------------------
 
 /**
- * The OpenClaw MCP client plugin.
+ * Register function called synchronously by OpenClaw's plugin runtime.
  *
- * On initialization, creates an MCPManager, connects to all configured
- * servers, discovers their tools, and returns them as OpenClaw ToolDefinitions.
+ * Since MCP server connections are async but register() must be synchronous,
+ * we register tool factories that lazily connect on first invocation.
  *
- * Lifecycle hooks:
- * - `onShutdown`: gracefully disconnects all servers.
- * - `onConfigChange`: reconciles connections with the new config and rebuilds
- *   the tool list.
+ * @param api - The OpenClaw plugin API.
  */
-export const plugin: ToolPlugin = {
-  async initialize(context: PluginContext): Promise<PluginResult> {
-    const config = context.config;
-    let mcpManager = new MCPManager(toManagerConfig(config));
+function register(api: PluginApi): void {
+  const config = api.pluginConfig;
+  if (!config?.servers || Object.keys(config.servers).length === 0) {
+    return;
+  }
 
-    // Connect to all enabled MCP servers in parallel
+  const mcpManager = new MCPManager(toManagerConfig(config));
+
+  // Register a factory for each configured server's tools.
+  // The factory connects lazily on first tool call.
+  let connected = false;
+  const ensureConnected = async (): Promise<void> => {
+    if (connected) return;
     await mcpManager.connectAll();
+    connected = true;
+  };
 
-    // Build the initial tool definitions from discovered tools
-    let tools = buildToolDefinitions(
-      mcpManager.getRegisteredTools(),
-      mcpManager
-    );
+  // Register tools for each configured server
+  for (const [serverName, serverConfig] of Object.entries(config.servers)) {
+    if (serverConfig.enabled === false) continue;
 
-    return {
-      tools,
+    const prefix = serverConfig.toolPrefix ?? serverName;
 
-      async onShutdown(): Promise<void> {
-        await mcpManager.disconnectAll();
+    // Register a proxy tool that connects lazily and forwards calls
+    api.registerTool({
+      name: `${prefix}__call`,
+      description: `Call a tool on MCP server "${serverName}" (${serverConfig.url}). Pass {"tool": "<tool_name>", "args": {}} to invoke.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          tool: { type: "string", description: "The tool name to call on this server" },
+          args: { type: "object", description: "Arguments to pass to the tool" },
+        },
+        required: ["tool"],
       },
-
-      async onConfigChange(newConfig: ConfigSchemaType): Promise<void> {
-        // Reconcile connections: disconnect removed/changed, connect new servers
-        await mcpManager.reconcile(toManagerConfig(newConfig));
-
-        // Rebuild the tool list from the updated registry
-        tools = buildToolDefinitions(
-          mcpManager.getRegisteredTools(),
-          mcpManager
-        );
+      async execute(callArgs: Record<string, unknown>): Promise<unknown> {
+        await ensureConnected();
+        const toolName = callArgs.tool as string;
+        const args = (callArgs.args as Record<string, unknown>) ?? {};
+        return mcpManager.callTool(`${prefix}__${toolName}`, args);
       },
-    };
-  },
-};
+    });
+  }
+
+  // Register shutdown hook
+  api.registerHook("gateway:shutdown", async () => {
+    if (connected) {
+      await mcpManager.disconnectAll();
+    }
+  }, { name: "mcp-client-shutdown", description: "Disconnect all MCP servers" });
+}
 
 // ---------------------------------------------------------------------------
 // Default Export
 // ---------------------------------------------------------------------------
 
-export default plugin;
+export default { register };
 
 // ---------------------------------------------------------------------------
 // Re-exports for external consumers
