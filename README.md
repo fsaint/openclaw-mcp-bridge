@@ -23,10 +23,15 @@ An MCP (Model Context Protocol) client plugin for [OpenClaw](https://github.com/
 ## Installation
 
 ```bash
+# Install directly from GitHub
+pnpm add github:fsaint/openclaw-mcp-bridge
+
+# Or from source
 git clone https://github.com/fsaint/openclaw-mcp-bridge.git
 cd openclaw-mcp-bridge
 pnpm install
 pnpm build
+openclaw plugins install ./dist
 ```
 
 ## Configuration
