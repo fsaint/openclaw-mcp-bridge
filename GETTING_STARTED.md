@@ -10,17 +10,9 @@ This guide walks you through installing the MCP Client plugin for OpenClaw, conf
 
 ## Installation
 
-### From the OpenClaw Plugin Registry
-
 ```bash
-openclaw plugin install @openclaw/plugin-mcp-client
-```
-
-### From Source
-
-```bash
-git clone https://github.com/openclaw/openclaw-mcp-client.git
-cd openclaw-mcp-client
+git clone https://github.com/fsaint/openclaw-mcp-bridge.git
+cd openclaw-mcp-bridge
 pnpm install
 pnpm build
 openclaw plugin install --local ./dist
