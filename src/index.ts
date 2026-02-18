@@ -8,31 +8,38 @@
  * @see SPEC.md section 6.4 for the plugin entry point specification.
  */
 
+import { Type } from "@sinclair/typebox";
 import { MCPManager } from "./manager/mcp-manager.js";
 import type { MCPManagerConfig } from "./manager/mcp-manager.js";
 import type { ConfigSchemaType } from "./config-schema.js";
 
 // ---------------------------------------------------------------------------
-// OpenClaw Plugin API types (mirrors openclaw/plugin-sdk)
+// OpenClaw Plugin API types (mirrors openclaw/plugin-sdk + pi-agent-core)
 // ---------------------------------------------------------------------------
 
 /**
- * A tool object that can be registered with OpenClaw via api.registerTool().
+ * Content block returned in AgentToolResult.
  */
-export interface ToolDefinition {
-  /** Unique tool name (namespaced, e.g. "tavily__search"). */
-  readonly name: string;
-  /** Human-readable description of what the tool does. */
-  readonly description: string;
-  /** JSON Schema describing the tool's input parameters. */
-  readonly inputSchema: Record<string, unknown>;
-  /**
-   * Execute the tool with the given arguments.
-   *
-   * @param args - The tool arguments matching the inputSchema.
-   * @returns The tool execution result.
-   */
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+type TextContent = { type: "text"; text: string };
+
+/**
+ * Result shape required by AgentTool.execute().
+ */
+interface AgentToolResult {
+  content: TextContent[];
+  details: unknown;
+}
+
+/**
+ * An AgentTool that can be registered with OpenClaw via api.registerTool().
+ * Must use TypeBox schemas for `parameters` (not plain JSON Schema).
+ */
+interface AgentTool {
+  name: string;
+  label: string;
+  description: string;
+  parameters: ReturnType<typeof Type.Object>;
+  execute: (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult>;
 }
 
 /**
@@ -41,7 +48,8 @@ export interface ToolDefinition {
 interface PluginApi {
   readonly id: string;
   readonly pluginConfig: ConfigSchemaType;
-  registerTool: (tool: ToolDefinition, opts?: { name?: string }) => void;
+  readonly logger: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
+  registerTool: (tool: AgentTool, opts?: { name?: string }) => void;
   registerHook: (events: string | string[], handler: (...args: unknown[]) => void, opts?: Record<string, unknown>) => void;
 }
 
@@ -93,35 +101,47 @@ function register(api: PluginApi): void {
     connected = true;
   };
 
-  // Register tools for each configured server
+  // Register a proxy tool per configured server.
+  // Each tool connects lazily and forwards calls to the remote MCP server.
   for (const [serverName, serverConfig] of Object.entries(config.servers)) {
     if (serverConfig.enabled === false) continue;
 
     const prefix = serverConfig.toolPrefix ?? serverName;
 
-    // Register a proxy tool that connects lazily and forwards calls
     api.registerTool({
       name: `${prefix}__call`,
-      description: `Call a tool on MCP server "${serverName}" (${serverConfig.url}). Pass {"tool": "<tool_name>", "args": {}} to invoke.`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          tool: { type: "string", description: "The tool name to call on this server" },
-          args: { type: "object", description: "Arguments to pass to the tool" },
-        },
-        required: ["tool"],
-      },
-      async execute(callArgs: Record<string, unknown>): Promise<unknown> {
+      label: `MCP: ${serverName}`,
+      description: `Call a tool on MCP server "${serverName}" (${serverConfig.url}). Pass tool name and arguments to invoke any tool on this server.`,
+      parameters: Type.Object({
+        tool: Type.String({ description: "The tool name to call on this server" }),
+        args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Arguments to pass to the tool" })),
+      }),
+      async execute(_toolCallId: string, params: Record<string, unknown>): Promise<AgentToolResult> {
         await ensureConnected();
-        const toolName = callArgs.tool as string;
-        const args = (callArgs.args as Record<string, unknown>) ?? {};
-        return mcpManager.callTool(`${prefix}__${toolName}`, args);
+        const toolName = params.tool as string;
+        const args = (params.args as Record<string, unknown>) ?? {};
+        try {
+          const result = await mcpManager.callTool(`${prefix}__${toolName}`, args);
+          const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+          return {
+            content: [{ type: "text", text }],
+            details: { server: serverName, tool: toolName, result },
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text", text: `Error calling ${prefix}__${toolName}: ${message}` }],
+            details: { server: serverName, tool: toolName, error: message },
+          };
+        }
       },
     });
+
+    api.logger.info(`mcp-client: registered proxy tool ${prefix}__call for server "${serverName}"`);
   }
 
   // Register shutdown hook
-  api.registerHook("gateway:shutdown", async () => {
+  api.registerHook("gateway_stop", async () => {
     if (connected) {
       await mcpManager.disconnectAll();
     }
