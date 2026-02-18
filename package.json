@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/plugin-mcp-client",
+  "name": "openclaw-mcp-bridge",
   "version": "0.1.0",
   "description": "MCP client plugin for OpenClaw — Streamable HTTP transport with OAuth 2.1 authentication",
   "type": "module",
