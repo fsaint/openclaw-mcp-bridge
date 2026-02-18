@@ -43,7 +43,7 @@ Add to your `openclaw.json`:
 {
   "plugins": {
     "entries": {
-      "mcp-client": {
+      "plugin-mcp-client": {
         "enabled": true,
         "config": {
           "servers": {
@@ -58,6 +58,7 @@ Add to your `openclaw.json`:
               }
             },
             "local-tools": {
+              "url": "stdio://local",
               "transport": "stdio",
               "command": "npx",
               "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
