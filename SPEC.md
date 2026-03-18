@@ -229,7 +229,7 @@ Based on the [MCP Authorization Spec (draft)](https://modelcontextprotocol.io/sp
 
 ```json
 {
-  "name": "@openclaw/plugin-mcp-client",
+  "name": "@openclaw/openclaw-mcp-bridge",
   "version": "1.0.0",
   "openclaw": {
     "extensions": ["./src/index.ts"],
