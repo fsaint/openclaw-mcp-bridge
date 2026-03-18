@@ -28,13 +28,15 @@ npm install openclaw-mcp-bridge
 
 ## Configuration
 
+> **Note:** The config key is `plugin-mcp-client` (the plugin ID), not the npm package name.
+
 Add to your `openclaw.json`:
 
 ```json
 {
   "plugins": {
     "entries": {
-      "openclaw-mcp-bridge": {
+      "plugin-mcp-client": {
         "enabled": true,
         "config": {
           "servers": {

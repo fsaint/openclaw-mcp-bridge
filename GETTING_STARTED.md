@@ -11,8 +11,8 @@ This guide walks you through installing the MCP Client plugin for OpenClaw, conf
 ## Installation
 
 ```bash
-git clone https://github.com/fsaint/openclaw-mcp-bridge.git
-cd openclaw-mcp-bridge
+git clone https://github.com/fsaint/plugin-mcp-client.git
+cd plugin-mcp-client
 pnpm install
 pnpm build
 openclaw plugins install --link .
@@ -25,7 +25,7 @@ After installation, enable the plugin in your `openclaw.json`:
 {
   "plugins": {
     "entries": {
-      "openclaw-mcp-bridge": {
+      "plugin-mcp-client": {
         "enabled": true,
         "config": {
           "servers": {}
@@ -38,7 +38,7 @@ After installation, enable the plugin in your `openclaw.json`:
 
 ## Configuring MCP Servers
 
-All server configuration lives in `openclaw.json` under `plugins.entries.openclaw-mcp-bridge.config.servers`. Each key is a server name you choose, and the value describes how to connect.
+All server configuration lives in `openclaw.json` under `plugins.entries.plugin-mcp-client.config.servers`. Each key is a server name you choose, and the value describes how to connect.
 
 ### HTTP Server with API Key
 
@@ -48,7 +48,7 @@ The simplest setup — ideal for services like Tavily that use a static API key.
 {
   "plugins": {
     "entries": {
-      "openclaw-mcp-bridge": {
+      "plugin-mcp-client": {
         "enabled": true,
         "config": {
           "servers": {
