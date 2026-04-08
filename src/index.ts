@@ -5,35 +5,34 @@
  * with a `register(api)` function that registers MCP tools via
  * `api.registerTool()`.
  *
+ * Each remote MCP tool is registered as a first-class OpenClaw tool with its
+ * own TypeBox parameter schema — no meta-dispatcher needed. The model calls
+ * `reins__gmail_search` directly with typed arguments, just like any native tool.
+ *
+ * Connection to MCP servers happens eagerly in a background promise so that
+ * `register()` can remain synchronous. Tools are available as soon as the
+ * first agent prompt is built (well before the first tool call).
+ *
  * @see SPEC.md section 6.4 for the plugin entry point specification.
  */
 
-import { Type } from "@sinclair/typebox";
+import { Type, type TSchema, type TProperties } from "@sinclair/typebox";
 import { MCPManager } from "./manager/mcp-manager.js";
 import type { MCPManagerConfig } from "./manager/mcp-manager.js";
 import type { ConfigSchemaType } from "./config-schema.js";
+import type { MCPToolInput } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // OpenClaw Plugin API types (mirrors openclaw/plugin-sdk + pi-agent-core)
 // ---------------------------------------------------------------------------
 
-/**
- * Content block returned in AgentToolResult.
- */
 type TextContent = { type: "text"; text: string };
 
-/**
- * Result shape required by AgentTool.execute().
- */
 interface AgentToolResult {
   content: TextContent[];
   details: unknown;
 }
 
-/**
- * An AgentTool that can be registered with OpenClaw via api.registerTool().
- * Must use TypeBox schemas for `parameters` (not plain JSON Schema).
- */
 interface AgentTool {
   name: string;
   label: string;
@@ -42,33 +41,105 @@ interface AgentTool {
   execute: (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult>;
 }
 
-/**
- * The API object passed to register() by OpenClaw's plugin runtime.
- */
 interface PluginApi {
   readonly id: string;
   readonly pluginConfig: ConfigSchemaType;
-  readonly logger: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
+  readonly logger: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    error: (msg: string) => void;
+  };
   registerTool: (tool: AgentTool, opts?: { name?: string }) => void;
-  registerHook: (events: string | string[], handler: (...args: unknown[]) => void, opts?: Record<string, unknown>) => void;
+  registerHook: (
+    events: string | string[],
+    handler: (...args: unknown[]) => void,
+    opts?: Record<string, unknown>
+  ) => void;
+}
+
+// ---------------------------------------------------------------------------
+// JSON Schema → TypeBox converter
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a primitive JSON Schema type string to a TypeBox TSchema.
+ * Preserves the description for the model.
+ */
+function primitiveToTypeBox(
+  s: { type?: string; description?: string; enum?: unknown[]; items?: { type?: string } },
+  opts: { description?: string }
+): TSchema {
+  if (s.enum && s.enum.length > 0) {
+    // Enum: union of literals
+    const literals = s.enum.map((v) => Type.Literal(v as string | number | boolean));
+    return literals.length === 1 ? literals[0] : Type.Union(literals, opts);
+  }
+
+  switch (s.type) {
+    case "string":  return Type.String(opts);
+    case "number":
+    case "integer": return Type.Number(opts);
+    case "boolean": return Type.Boolean(opts);
+    case "array":   return Type.Array(Type.Unknown(), opts);
+    case "object":  return Type.Record(Type.String(), Type.Unknown(), opts);
+    default:        return Type.Unknown(opts);
+  }
+}
+
+/**
+ * Build a TypeBox Object schema from an MCP tool's JSON Schema inputSchema.
+ *
+ * Required fields become plain TypeBox types; optional fields are wrapped in
+ * Type.Optional(). Tools with no declared properties accept an empty object.
+ */
+function buildTypeBoxSchema(inputSchema: MCPToolInput): ReturnType<typeof Type.Object> {
+  const properties = inputSchema.properties ?? {};
+  const required = new Set(inputSchema.required ?? []);
+
+  if (Object.keys(properties).length === 0) {
+    return Type.Object({});
+  }
+
+  const props: TProperties = {};
+
+  for (const [key, rawSchema] of Object.entries(properties)) {
+    const s = rawSchema as {
+      type?: string;
+      description?: string;
+      enum?: unknown[];
+      items?: { type?: string };
+    };
+    const opts = s.description ? { description: s.description } : {};
+    const t = primitiveToTypeBox(s, opts);
+    props[key] = required.has(key) ? t : Type.Optional(t);
+  }
+
+  return Type.Object(props);
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Convert a ConfigSchemaType to the MCPManagerConfig shape expected by MCPManager.
- *
- * @param config - The plugin configuration from OpenClaw.
- * @returns An MCPManagerConfig ready for the MCPManager constructor.
- */
 function toManagerConfig(config: ConfigSchemaType): MCPManagerConfig {
   return {
     servers: config.servers,
     toolDiscoveryInterval: config.toolDiscoveryInterval,
     maxConcurrentServers: config.maxConcurrentServers,
     debug: config.debug,
+  };
+}
+
+function makeToolResult(result: unknown): AgentToolResult {
+  const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  return { content: [{ type: "text", text }], details: result };
+}
+
+function makeErrorResult(toolName: string, err: unknown): AgentToolResult {
+  const message = err instanceof Error ? err.message : String(err);
+  return {
+    content: [{ type: "text", text: `Error calling ${toolName}: ${message}` }],
+    details: { error: message },
   };
 }
 
@@ -79,8 +150,10 @@ function toManagerConfig(config: ConfigSchemaType): MCPManagerConfig {
 /**
  * Register function called synchronously by OpenClaw's plugin runtime.
  *
- * Since MCP server connections are async but register() must be synchronous,
- * we register tool factories that lazily connect on first invocation.
+ * Starts MCP server connections eagerly in a background promise. Once each
+ * server responds to `tools/list`, its tools are registered as individual
+ * first-class OpenClaw tools (e.g. `reins__gmail_search`) with full TypeBox
+ * parameter schemas.
  *
  * @param api - The OpenClaw plugin API.
  */
@@ -92,60 +165,54 @@ function register(api: PluginApi): void {
 
   const mcpManager = new MCPManager(toManagerConfig(config));
 
-  // Register a factory for each configured server's tools.
-  // The factory connects lazily on first tool call.
-  let connected = false;
-  const ensureConnected = async (): Promise<void> => {
-    if (connected) return;
-    await mcpManager.connectAll();
-    connected = true;
-  };
+  // Connect eagerly in the background — tools are registered once available.
+  // This fires before the first agent prompt is built, so tools are ready
+  // before the model ever needs to call them.
+  mcpManager
+    .connectAll()
+    .then(() => {
+      const registeredTools = mcpManager.getRegisteredTools();
 
-  // Register a proxy tool per configured server.
-  // Each tool connects lazily and forwards calls to the remote MCP server.
-  for (const [serverName, serverConfig] of Object.entries(config.servers)) {
-    if (serverConfig.enabled === false) continue;
+      for (const rt of registeredTools) {
+        const schema = buildTypeBoxSchema(rt.inputSchema as MCPToolInput);
 
-    const prefix = serverConfig.toolPrefix ?? serverName;
+        api.registerTool({
+          name: rt.namespacedName,
+          label: rt.description.slice(0, 60) || rt.namespacedName,
+          description: rt.description,
+          parameters: schema,
+          async execute(_toolCallId, params) {
+            try {
+              const result = await mcpManager.callTool(
+                rt.namespacedName,
+                params as Record<string, unknown>
+              );
+              return makeToolResult(result);
+            } catch (err) {
+              return makeErrorResult(rt.namespacedName, err);
+            }
+          },
+        });
+      }
 
-    api.registerTool({
-      name: `${prefix}__call`,
-      label: `MCP: ${serverName}`,
-      description: `Call a tool on MCP server "${serverName}" (${serverConfig.url}). Pass tool name and arguments to invoke any tool on this server.`,
-      parameters: Type.Object({
-        tool: Type.String({ description: "The tool name to call on this server" }),
-        args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Arguments to pass to the tool" })),
-      }),
-      async execute(_toolCallId: string, params: Record<string, unknown>): Promise<AgentToolResult> {
-        await ensureConnected();
-        const toolName = params.tool as string;
-        const args = (params.args as Record<string, unknown>) ?? {};
-        try {
-          const result = await mcpManager.callTool(`${prefix}__${toolName}`, args);
-          const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-          return {
-            content: [{ type: "text", text }],
-            details: { server: serverName, tool: toolName, result },
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return {
-            content: [{ type: "text", text: `Error calling ${prefix}__${toolName}: ${message}` }],
-            details: { server: serverName, tool: toolName, error: message },
-          };
-        }
-      },
+      api.logger.info(
+        `mcp-bridge: registered ${registeredTools.length} tools from ${mcpManager.getConnections().length} server(s)`
+      );
+    })
+    .catch((err: unknown) => {
+      api.logger.error(
+        `mcp-bridge: failed to connect to MCP servers — ${err instanceof Error ? err.message : String(err)}`
+      );
     });
 
-    api.logger.info(`mcp-client: registered proxy tool ${prefix}__call for server "${serverName}"`);
-  }
-
-  // Register shutdown hook
-  api.registerHook("gateway_stop", async () => {
-    if (connected) {
+  // Graceful shutdown
+  api.registerHook(
+    "gateway_stop",
+    async () => {
       await mcpManager.disconnectAll();
-    }
-  }, { name: "mcp-client-shutdown", description: "Disconnect all MCP servers" });
+    },
+    { name: "mcp-bridge-shutdown", description: "Disconnect all MCP servers on gateway stop" }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -158,20 +225,15 @@ export default { register };
 // Re-exports for external consumers
 // ---------------------------------------------------------------------------
 
-// Manager layer
 export { MCPManager } from "./manager/mcp-manager.js";
 export type { MCPManagerConfig, ServerConnection } from "./manager/mcp-manager.js";
 export { ToolRegistry } from "./manager/tool-registry.js";
 export type { RegisteredTool, ToolRegistryConfig } from "./manager/tool-registry.js";
-
-// Transport layer
 export { StreamableHTTPTransport } from "./transport/streamable-http.js";
 export type { StreamableHTTPConfig } from "./transport/streamable-http.js";
 export { StdioTransport } from "./transport/stdio.js";
 export type { StdioTransportConfig } from "./transport/stdio.js";
 export { SSEParser, parseSSEStream } from "./transport/sse-parser.js";
-
-// Config and types
 export { configSchema } from "./config-schema.js";
 export type {
   ConfigSchemaType,
